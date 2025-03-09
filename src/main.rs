@@ -1,3 +1,5 @@
+mod tcp_connection_sm;
+
 use std::{env, thread};
 use std::io::{Error, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -5,7 +7,6 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 
-const PORT: u32 = 80;
 
 mod dns_concurrent {
     use std::io::{Error, Read, Write};
@@ -14,11 +15,20 @@ mod dns_concurrent {
     use std::sync::mpsc::{channel, Receiver, Sender};
     use std::thread;
     use std::thread::JoinHandle;
-    use crate::PORT;
+    use crate::tcp_connection_sm::tcp_connection_sm::{TcpConnected, TcpDisconnected};
+    use crate::tcp_connection_sm::tcp_connection_sm::init_tcp_connection_sm;
 
-    struct IpChannels {
+    struct IpChannel {
         ip_addr: String,
-        _channel_receiver: Receiver<()>
+        _channel_receiver: Receiver<()>,
+        _chanel_sender: Sender<()>,
+        tcp_connection_sm: TcpDisconnected,
+    }
+
+    impl IpChannel {
+        fn connect(&self, dns: &str) -> Result<TcpConnected, Error> {
+            self.tcp_connection_sm.connect(&*self.ip_addr, dns)
+        }
     }
 
     pub struct DnsTcpStream {
@@ -30,13 +40,14 @@ mod dns_concurrent {
     pub struct DnsIdle;
 
     pub struct AvailableTcpConnections {
-        ip_addresses: Vec<IpChannels>,
+        ip_channels: Vec<IpChannel>,
         dns_name: String,
         _tx: Sender<DnsTcpStream>,
-        _rx: Receiver<DnsTcpStream>
+        _rx: Receiver<DnsTcpStream>,
+
     }
 
-    pub struct WaitingConcurrentConnections {
+    pub struct ReadyConcurrentConnections {
         _receive_handler: JoinHandle<()>,
         _worker_handler: Vec<JoinHandle<()>>,
     }
@@ -52,34 +63,32 @@ mod dns_concurrent {
         pub fn query_ips(self, dns: &str) -> Result<AvailableTcpConnections, Error>{
             let socket_addresses = format!("{}:{}", dns, PORT).to_socket_addrs()?;
 
-
-            for socket_addr in socket_addresses{
-                socket_addr.ip().to_string()
+            let mut ip_channels: Vec<IpChannel> = Vec::with_capacity(socket_addresses.len());
+            for socket_addr in socket_addresses {
+                let (tx, rx) = channel();
+                ip_channels.push(IpChannel {ip_addr:socket_addr.ip().to_string(), _channel_receiver: rx, _chanel_sender: tx,
+                    tcp_connection_sm: init_tcp_connection_sm()});
             }
-            let ip_addresses = ip_addresses_res
-                .map(|address| IpChannels{
-                                            ip_addr: address.ip().to_string(),
-                    _channel_receiver: channel().1}).collect();
-            Ok(AvailableTcpConnections::new(ip_addresses, String::from(dns)))
+            Ok(AvailableTcpConnections::new(ip_channels, String::from(dns)))
         }
     }
 
     impl AvailableTcpConnections {
 
-        pub fn new(ip_addresses: Vec<String>, dns_name: String) -> Self{
+        pub fn new(ip_channels: Vec<IpChannel>, dns_name: String) -> Self{
             let (_tx, _rx) = mpsc::channel();
             AvailableTcpConnections {
-                ip_addresses,
+                ip_channels,
                 dns_name,
                 _tx,
                 _rx
             }
         }
 
-        pub fn init_concurrent_connections(self) -> WaitingConcurrentConnections{
+        pub fn init_concurrent_connections(self) -> ReadyConcurrentConnections{
             let rec_thread = self.spawn_receiver_thread();
             let worker_threads = self.spawn_worker_threads();
-            WaitingConcurrentConnections{
+            ReadyConcurrentConnections{
                 _receive_handler: rec_thread,
                 _worker_handler: worker_threads
             }
@@ -106,29 +115,34 @@ mod dns_concurrent {
                         drop(self._tx.clone());
                         break;
                     }
-                    }
+                }
             });
             rec_func
         }
 
+        fn worker_wrapper(ip_channel: &IpChannel, dns: &str, result_channel: Sender<TcpStream>) -> Result<(), Error>{
+            ip_channel._channel_receiver.recv()?;
+            let mut tcp_connected: TcpConnected = ip_channel.connect(dns)?;
+
+            tcp_connected = tcp_connected.send_get_request()?;
+            result_channel.send(tcp_connected.connection_stream);
+            Ok(())
+        }
+
         fn spawn_worker_threads(&self) -> Vec<JoinHandle<()>> {
-            let mut thread_handles = Vec::with_capacity(self.ip_addresses.len());
-            for ip_address in self.ip_addresses {
+            let mut thread_handles = Vec::with_capacity(self.ip_channels.len());
+            for ip_address in self.ip_channels {
                 let tx_cpy = self._tx.clone();
                 thread_handles.push(thread::spawn(move || {
-                    if let Ok(dns_tcp_stream) = initialise_connection(&ip_address){
-                        // dns_tcp_stream.dns = dns;
-                        if let Err(e) = tx_cpy.send(dns_tcp_stream){
-                            eprintln!("Error: {}", e);
-                        }
+                    match Self::worker_wrapper(&ip_address, &*self.dns_name, tx_cpy) {
+                        Ok(_) => {}
+                        Err(e) => {eprintln!("Ip worker {} failed to initialise connection! {}", ip_address.ip_addr, e)}
                     }
                 }));
             }
             thread_handles
         }
     }
-
-
 
 
     fn send_data(mut tcp_stream: &TcpStream, dns: &str) -> Result<(), Error> {
@@ -151,22 +165,6 @@ mod dns_concurrent {
 
 }
 
-
-struct TcpDisconnected;
-
-
-impl TcpDisconnected {
-
-    fn initialise_connection(self, dns_data: &DnsReturned) -> Result<TcpConnected, Error> {
-        let stream = TcpStream::connect(format!("{}:{}", dns_data., PORT))?;
-        Ok(TcpConnected{stream, ip: ip.to_string(), dns: String::new()})
-    }
-
-}
-
-struct TcpConnected{
-    stream: TcpStream
-}
 
 
 
