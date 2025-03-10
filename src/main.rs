@@ -55,12 +55,12 @@ fn read_data(mut tcp_stream: &TcpStream) -> Result<String, Error> {
 ///
 fn receiver_executor_wrapper(receiver_channel: Receiver<TcpStream>, transmitter_channel: Sender<TcpStream>, dns: &str) -> Result<(), Error> {
     while let Ok(dns_tcp_stream) = receiver_channel.recv() {
-        println!("Connected to IP {}", dns_tcp_stream.peer_addr()?.ip().to_string());
+        println!("--------\nConnected to IP {}", dns_tcp_stream.peer_addr()?.ip().to_string());
         if send_data(&dns_tcp_stream, &dns).is_ok(){
             // Close channel no more data will be received, other TcpStream data will be dropped and closed
             drop(transmitter_channel);
             let data = read_data(&dns_tcp_stream)?;
-            println!("{}", data);
+            println!("--------\n{}", data);
             break;
         } else{
             eprintln!("Tcp stream failed to send data!");
@@ -111,7 +111,7 @@ fn main() {
             "IPv6"
         };
         let ip_str = ip_address.ip().to_string();
-        println!("{} {} {}\n", dns, ipv_str, ip_str);
+        println!("{} {} {}", dns, ipv_str, ip_str);
         ip_strings.push(ip_str);
     }
 
