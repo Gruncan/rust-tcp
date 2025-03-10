@@ -1,9 +1,9 @@
-use std::{env, io, thread};
 use std::io::{Error, Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::path::Path;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::{env, io, thread, vec};
 
 const PORT: u32 = 80;
 
@@ -15,12 +15,10 @@ fn program_name(path : &String) -> String {
 /// Returns a Vector of ips associated with a given DNS string
 ///
 /// If DNS is not resolvable returns Error
-fn get_ip_addresses(dns: &str) -> Result<Vec<String>, Error> {
+fn get_ip_addresses(dns: &str) -> Result<vec::IntoIter<SocketAddr>, Error> {
     let ip_addresses = format!("{}:{}", dns, PORT).to_socket_addrs()?;
 
-    Ok(ip_addresses.map(|address| address.ip().to_string())
-        .collect()
-    )
+    Ok(ip_addresses)
 }
 
 /// Initialised a TCP connection on a given IP on port [`PORT`]
@@ -57,7 +55,9 @@ fn read_data(mut tcp_stream: &TcpStream) -> Result<String, Error> {
 ///
 fn receiver_executor_wrapper(receiver_channel: Receiver<TcpStream>, transmitter_channel: Sender<TcpStream>, dns: &str) -> Result<(), Error> {
     while let Ok(dns_tcp_stream) = receiver_channel.recv() {
+        println!("Connected to IP {}", dns_tcp_stream.peer_addr()?.ip().to_string());
         if send_data(&dns_tcp_stream, &dns).is_ok(){
+            // Close channel no more data will be received, other TcpStream data will be dropped and closed
             drop(transmitter_channel);
             let data = read_data(&dns_tcp_stream)?;
             println!("{}", data);
@@ -95,16 +95,29 @@ fn main() {
     }
 
     let dns = args[1].clone();
-    println!("Searching ips for: {}...", dns);
     let ip_addresses_res = get_ip_addresses(&dns);
     if let Err(e) = ip_addresses_res {
         eprintln!("Error: {}", e);
         return;
     }
     let ip_addresses = ip_addresses_res.unwrap();
+    let len = ip_addresses.len();
 
-    let mut thread_handles = Vec::with_capacity(ip_addresses.len());
-    let mut start_channels = Vec::with_capacity(ip_addresses.len());
+    let mut ip_strings = Vec::with_capacity(len);
+    for ip_address in ip_addresses {
+        let ipv_str = if ip_address.is_ipv4() {
+            "IPv4"
+        } else {
+            "IPv6"
+        };
+        let ip_str = ip_address.ip().to_string();
+        println!("{} {} {}\n", dns, ipv_str, ip_str);
+        ip_strings.push(ip_str);
+    }
+
+
+    let mut thread_handles = Vec::with_capacity(len);
+    let mut start_channels = Vec::with_capacity(len);
 
     let (tx, rx) = mpsc::channel();
     let tx_rec_copy = tx.clone();
@@ -119,7 +132,7 @@ fn main() {
     });
 
 
-    for ip_address in ip_addresses {
+    for ip_address in ip_strings {
         let (stx, srx) = mpsc::channel();
         start_channels.push(stx);
         let tx_cpy = tx.clone();
